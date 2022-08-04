@@ -252,13 +252,37 @@ class ServerlessCustomDomain {
      */
     public async createOrGetDomainForCfOutputs(): Promise<void> {
         await Promise.all(this.disabledDomains.map(async (domain) => {
-            const autoDomain = domain.autoDomain;
-            const enabled = domain.enabled;
-            if (autoDomain === true && enabled === false) {
-                domain.domainInfo = await this.apiGatewayWrapper.getCustomDomainInfo(domain).catch(() => null);
-                if (domain.domainInfo) {
-                    Globals.logInfo("Removing Disabled disabled domain name before deploy.");
-                    await this.deleteDomain(domain);
+            Globals.logInfo(`Removing disabled domain mapping '${domain.givenDomainName}' before deploy.`)
+            try {
+                domain.apiId = await this.getApiId(domain);
+                // Unable to find the corresponding API, manual clean up will be required
+                if (!domain.apiId) {
+                    Globals.logInfo(`Unable to find corresponding API for '${domain.givenDomainName}' it may not exist already.`);
+                } else {
+                    const mappings = await this.apiGatewayWrapper.getApiMappings(domain);
+                    const filteredMappings = mappings.filter((mapping) => {
+                        return mapping.ApiId === domain.apiId || (
+                            mapping.ApiMappingKey === domain.basePath && domain.allowPathMatching
+                        )
+                    });
+                    domain.apiMapping = filteredMappings ? filteredMappings[0] : null;
+                    if (domain.apiMapping) {
+                        Globals.logInfo(`Removing API Mapping with id: '${domain.apiMapping.ApiMappingId}'`)
+                        await this.apiGatewayWrapper.deleteBasePathMapping(domain);
+                    } else {
+                        Globals.logWarning(
+                            `Api mapping was not found for '${domain.givenDomainName}'. Skipping base path deletion.`
+                        );
+                    }
+                }
+            } catch (err) {
+                if (err.message.indexOf("Failed to find CloudFormation") > -1) {
+                    Globals.logWarning(`Unable to find Cloudformation Stack for ${domain.givenDomainName},
+                        API Mappings may need to be manually removed.`);
+                } else {
+                    Globals.logWarning(
+                        `Unable to remove base path mappings for '${domain.givenDomainName}':\n${err.message}`
+                    );
                 }
             }
         }));
