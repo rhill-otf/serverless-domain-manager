@@ -23,6 +23,7 @@ class ServerlessCustomDomain {
 
     // Domain Manager specific properties
     public domains: DomainConfig[] = [];
+    public disabledDomains: DomainConfig[] = [];
 
     constructor(serverless: ServerlessInstance, options: ServerlessOptions, v3Utils?: ServerlessUtils) {
         this.serverless = serverless;
@@ -102,6 +103,7 @@ class ServerlessCustomDomain {
 
         // Loop over the domain configurations and populate the domains array with DomainConfigs
         this.domains = [];
+        this.disabledDomains = [];
         customDomains.forEach((domain) => {
             const apiTypes = Object.keys(Globals.apiTypes);
 
@@ -123,7 +125,7 @@ class ServerlessCustomDomain {
                 this.domains.push(new DomainConfig(domain));
             }
         });
-
+        this.disabledDomains = this.domains.filter((domain) => !domain.enabled);
         // Filter inactive domains
         this.domains = this.domains.filter((domain) => domain.enabled);
     }
@@ -227,7 +229,9 @@ class ServerlessCustomDomain {
      * Wraps deleting a domain and resource record set
      */
     public async deleteDomain(domain: DomainConfig): Promise<void> {
-        domain.domainInfo = await this.apiGatewayWrapper.getCustomDomainInfo(domain);
+        if (!domain.domainInfo) {
+            domain.domainInfo = await this.apiGatewayWrapper.getCustomDomainInfo(domain);
+        }
         const route53 = new Route53Wrapper(domain.route53Profile, domain.route53Region);
         try {
             if (domain.domainInfo) {
@@ -247,6 +251,17 @@ class ServerlessCustomDomain {
      * Lifecycle function to createDomain before deploy and add domain info to the CloudFormation stack's Outputs
      */
     public async createOrGetDomainForCfOutputs(): Promise<void> {
+        await Promise.all(this.disabledDomains.map(async (domain) => {
+            const autoDomain = domain.autoDomain;
+            const enabled = domain.enabled;
+            if (autoDomain === true && enabled === false) {
+                domain.domainInfo = await this.apiGatewayWrapper.getCustomDomainInfo(domain).catch(() => null);
+                if (domain.domainInfo) {
+                    Globals.logInfo("Removing Disabled disabled domain name before deploy.");
+                    await this.deleteDomain(domain);
+                }
+            }
+        }));
         await Promise.all(this.domains.map(async (domain) => {
             const autoDomain = domain.autoDomain;
             if (autoDomain === true) {
